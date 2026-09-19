@@ -209,9 +209,9 @@ def admin():
             techo = (date.today() + timedelta(days=dias + int(data.get("gracia", 14)))).isoformat()
             conn.execute(
                 "INSERT INTO licencias (key,tipo,duracion,techo,hwid,cliente,creada)"
-                " VALUES (?,'hwid',?,?,?,'normal',?)",
+                " VALUES (?,'hwid',?,?,?,?,?)",
                 (key, dias, techo, data.get("hwid", "").strip().lower() or None,
-                 int(time.time())))
+                 (data.get("cliente") or "sin-nombre").strip(), int(time.time())))
             return jsonify(key=key, dias=dias, techo=techo,
                            nota="mandale la key; se activa cuando abra el cheat")
         if op == "fecha":
@@ -220,7 +220,9 @@ def admin():
             vence = (date.today() + timedelta(days=dias)).isoformat()
             conn.execute(
                 "INSERT INTO licencias (key,tipo,vence,cliente,creada)"
-                " VALUES (?,'hwid',?,?,'normal',?)", (key, vence, int(time.time())))
+                " VALUES (?,'hwid',?,?,?)",
+                (key, vence, (data.get("cliente") or "sin-nombre").strip(),
+                 int(time.time())))
             return jsonify(key=key, vence=vence)
         if op == "renovar":
             lic = conn.execute("SELECT * FROM licencias WHERE key=?", (key,)).fetchone()
@@ -250,6 +252,9 @@ def admin():
             # la fecha de activacion se conserva (renovar NO reinicia el reloj).
             conn.execute("UPDATE licencias SET hwid=NULL WHERE key=?", (key,))
             return jsonify(ok=True, nota="pc desligado; el cliente abre el launcher y se re-liga solo")
+        if op == "eliminar":
+            conn.execute("DELETE FROM licencias WHERE key=?", (key,))
+            return jsonify(ok=True)
         if op == "listar":
             rows = conn.execute("SELECT * FROM licencias ORDER BY creada DESC").fetchall()
             return jsonify(licencias=[dict(r) for r in rows])
