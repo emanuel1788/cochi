@@ -190,13 +190,18 @@ def trial():
 @app.post("/admin")
 def admin():
     """Operaciones del dueno: {token, op, ...}
-    op=crear  {cliente, dias, hwid?}      -> key (por activacion, techo auto)
-    op=fecha  {cliente, dias}             -> key de fecha fija
-    op=revocar {key} / op=listar          -> gestion"""
+    op=crear      {cliente, dias, hwid?}  -> key por activacion (techo auto)
+    op=fecha      {cliente, dias}         -> key de fecha fija
+    op=renovar    {key, dias}             -> suma dias desde HOY (techo nuevo)
+    op=revocar    {key}                   -> bloquea la key (efecto inmediato)
+    op=desrevocar {key}                   -> desbloquea
+    op=reset_hwid {key}                   -> desliga el PC (activacion se conserva)
+    op=listar"""
     data = request.get_json(silent=True) or {}
     if data.get("token") != ADMIN_TOKEN:
         return jsonify(error="token invalido"), 401
     op = data.get("op")
+    key = (data.get("key") or "").strip()
     with db() as conn:
         if op == "crear":
             key = new_key()
@@ -217,10 +222,34 @@ def admin():
                 "INSERT INTO licencias (key,tipo,vence,cliente,creada)"
                 " VALUES (?,'hwid',?,?,'normal',?)", (key, vence, int(time.time())))
             return jsonify(key=key, vence=vence)
+        if op == "renovar":
+            lic = conn.execute("SELECT * FROM licencias WHERE key=?", (key,)).fetchone()
+            if not lic:
+                return jsonify(error="key no existe"), 404
+            dias = int(data.get("dias", 30))
+            hoy = date.today()
+            # base de renovacion: si sigue vigente, desde su vencimiento actual;
+            # si ya expiro, desde hoy (no pierde dias por renovar tarde)
+            base = hoy
+            if lic["techo"]:
+                techo_viejo = date.fromisoformat(lic["techo"])
+                if techo_viejo >= hoy:
+                    base = techo_viejo
+            techo = (base + timedelta(days=dias)).isoformat()
+            conn.execute("UPDATE licencias SET techo=? WHERE key=?", (techo, key))
+            return jsonify(ok=True, techo=techo,
+                           nota="el cliente re-abre el launcher y se re-activa solo")
         if op == "revocar":
-            conn.execute("UPDATE licencias SET revocada=1 WHERE key=?",
-                         (data.get("key", ""),))
+            conn.execute("UPDATE licencias SET revocada=1 WHERE key=?", (key,))
             return jsonify(ok=True)
+        if op == "desrevocar":
+            conn.execute("UPDATE licencias SET revocada=0 WHERE key=?", (key,))
+            return jsonify(ok=True)
+        if op == "reset_hwid":
+            # desliga el PC: el proximo /activate liga el HWID nuevo.
+            # la fecha de activacion se conserva (renovar NO reinicia el reloj).
+            conn.execute("UPDATE licencias SET hwid=NULL WHERE key=?", (key,))
+            return jsonify(ok=True, nota="pc desligado; el cliente abre el launcher y se re-liga solo")
         if op == "listar":
             rows = conn.execute("SELECT * FROM licencias ORDER BY creada DESC").fetchall()
             return jsonify(licencias=[dict(r) for r in rows])
