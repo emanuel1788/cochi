@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: cochi-licenses
+    runtime: python
+    plan: free
+    rootDir: server
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: COCHI_ADMIN_TOKEN
+        sync: false      # lo pones tu en el dashboard de Render (NO en el repo)
+      - key: LICENSE_SEED
+        sync: false      # hex de licensing/private.key (NO en el repo)
+      - key: SUPABASE_DB_URL
+        sync: false      # URI de Supabase -> datos persistentes (NO en el repo)
