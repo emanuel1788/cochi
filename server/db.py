@@ -69,42 +69,43 @@ if _url:
             "     Revisa la URI (password URL-encoded) o borra la variable para "
             "usar SQLite local.")
 
-    def q(sql: str, params=(), one=False, commit=False, return_sql=None,
-          _retry=True):
+    def q(sql: str, params=(), one=False, commit=False, return_sql=None):
         sql = sql.replace("?", "%s")   # SQLite usa ?, Postgres %s
         global _PG
         with _LOCK:
-            try:
-                with _PG.cursor() as c:
-                    c.execute(sql, params)
-                    if commit:
-                        _PG.commit()
-                    if return_sql:
-                        c.execute(return_sql, params)
-                    if c.description is None:      # INSERT/UPDATE/DELETE: sin filas
-                        rows = []
-                    else:
-                        cols = [d[0] for d in c.description]
-                        rows = [dict(zip(cols, r)) for r in c.fetchall()]
-            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-                # Supabase corta conexiones idle: sin esto, la conexion muerta
-                # quedaba en estado abortado y TODOS los requests fallaban hasta
-                # un redeploy. Rollback + reconexion + 1 reintento.
-                if not _retry:
-                    raise
+            # reintento SIN recursion: la rellamada a q() dentro del lock se
+            # auto-bloqueaba (threading.Lock no es reentrante) y colgaba el
+            # request hasta el timeout del worker en vez de recuperarse.
+            for attempt in (0, 1):
                 try:
-                    _PG.rollback()
-                except Exception:
-                    pass
-                try:
-                    _PG.close()
-                except Exception:
-                    pass
-                _PG = _connect_pg()
-                print(f"[db] conexion Postgres perdida, reconectada: {e}")
-                return q(sql, params, one=one, commit=commit,
-                         return_sql=return_sql, _retry=False)
-        return (rows[0] if rows else None) if one else rows
+                    with _PG.cursor() as c:
+                        c.execute(sql, params)
+                        if commit:
+                            _PG.commit()
+                        if return_sql:
+                            c.execute(return_sql, params)
+                        if c.description is None:      # INSERT/UPDATE/DELETE: sin filas
+                            rows = []
+                        else:
+                            cols = [d[0] for d in c.description]
+                            rows = [dict(zip(cols, r)) for r in c.fetchall()]
+                    return (rows[0] if rows else None) if one else rows
+                except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                    # Supabase corta conexiones idle: sin esto, la conexion muerta
+                    # quedaba en estado abortado y TODOS los requests fallaban hasta
+                    # un redeploy. Rollback + reconexion + 1 reintento.
+                    if attempt == 1:
+                        raise
+                    try:
+                        _PG.rollback()
+                    except Exception:
+                        pass
+                    try:
+                        _PG.close()
+                    except Exception:
+                        pass
+                    _PG = _connect_pg()
+                    print(f"[db] conexion Postgres perdida, reconectada: {e}")
 
 else:
     # ------------------------------------------------------------ SQLite local
