@@ -18,6 +18,7 @@ import os
 import threading
 
 _IS_PG = False
+ENGINE = "sqlite"
 _url = (os.environ.get("SUPABASE_DB_URL") or "").strip()
 
 if _url:
@@ -54,6 +55,7 @@ if _url:
                 creada   BIGINT)""")
         _PG.commit()
         _IS_PG = True
+        ENGINE = "postgres"
         print(f"[db] Supabase/Postgres conectado: {u.hostname}")
 
     except Exception as e:
