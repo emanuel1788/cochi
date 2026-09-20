@@ -29,16 +29,21 @@ if _url:
     try:
         import psycopg2
 
-        _PG = psycopg2.connect(
-            host=u.hostname,
-            port=u.port or 5432,
-            dbname=(u.path or "/postgres").lstrip("/") or "postgres",
-            user=unquote(u.username or "postgres"),
-            password=unquote(u.password or ""),   # acepta password URL-encodeado o plano
-            sslmode="require",          # obligatorio para Supabase
-            connect_timeout=10,
-        )
-        _PG.autocommit = False
+        def _connect_pg():
+            """Abre (o reabre) la conexion a Supabase. Devuelve la conexion viva."""
+            conn = psycopg2.connect(
+                host=u.hostname,
+                port=u.port or 5432,
+                dbname=(u.path or "/postgres").lstrip("/") or "postgres",
+                user=unquote(u.username or "postgres"),
+                password=unquote(u.password or ""),
+                sslmode="require",
+                connect_timeout=10,
+            )
+            conn.autocommit = False
+            return conn
+
+        _PG = _connect_pg()
         _LOCK = threading.Lock()        # 1 conexion compartida, acceso serializado
 
         with _PG.cursor() as c:
@@ -64,20 +69,41 @@ if _url:
             "     Revisa la URI (password URL-encoded) o borra la variable para "
             "usar SQLite local.")
 
-    def q(sql: str, params=(), one=False, commit=False, return_sql=None):
+    def q(sql: str, params=(), one=False, commit=False, return_sql=None,
+          _retry=True):
         sql = sql.replace("?", "%s")   # SQLite usa ?, Postgres %s
+        global _PG
         with _LOCK:
-            with _PG.cursor() as c:
-                c.execute(sql, params)
-                if commit:
-                    _PG.commit()
-                if return_sql:
-                    c.execute(return_sql, params)
-                if c.description is None:      # INSERT/UPDATE/DELETE: sin filas
-                    rows = []
-                else:
-                    cols = [d[0] for d in c.description]
-                    rows = [dict(zip(cols, r)) for r in c.fetchall()]
+            try:
+                with _PG.cursor() as c:
+                    c.execute(sql, params)
+                    if commit:
+                        _PG.commit()
+                    if return_sql:
+                        c.execute(return_sql, params)
+                    if c.description is None:      # INSERT/UPDATE/DELETE: sin filas
+                        rows = []
+                    else:
+                        cols = [d[0] for d in c.description]
+                        rows = [dict(zip(cols, r)) for r in c.fetchall()]
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                # Supabase corta conexiones idle: sin esto, la conexion muerta
+                # quedaba en estado abortado y TODOS los requests fallaban hasta
+                # un redeploy. Rollback + reconexion + 1 reintento.
+                if not _retry:
+                    raise
+                try:
+                    _PG.rollback()
+                except Exception:
+                    pass
+                try:
+                    _PG.close()
+                except Exception:
+                    pass
+                _PG = _connect_pg()
+                print(f"[db] conexion Postgres perdida, reconectada: {e}")
+                return q(sql, params, one=one, commit=commit,
+                         return_sql=return_sql, _retry=False)
         return (rows[0] if rows else None) if one else rows
 
 else:
