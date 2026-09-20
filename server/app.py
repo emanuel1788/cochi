@@ -131,6 +131,8 @@ def activate():
         eff_days = min(eff_days, days_from_iso(lic["techo"]))
     elif lic["vence"]:
         eff_days = min(eff_days, days_from_iso(lic["vence"]))
+    if not lic["duracion"] and not lic["vence"] and lic["techo"]:
+        eff_days = days_from_iso(lic["techo"])   # sin duracion ni fecha: vive hasta el techo
     ey, em, ed = _civil_from_days(eff_days)
 
     payload = {
@@ -190,7 +192,9 @@ def admin():
     """Operaciones del dueno: {token, op, ...}
     op=crear      {cliente, dias, hwid?}  -> key por activacion (techo auto)
     op=fecha      {cliente, dias}         -> key de fecha fija
-    op=renovar    {key, dias}             -> suma dias desde HOY (techo nuevo)
+    op=renovar    {key, dias}             -> suma dias (techo Y duracion)
+    op=reparar    {key}                   -> recalcula duracion hasta el techo
+                                            (licencias renovadas con server viejo)
     op=revocar    {key}                   -> bloquea la key (efecto inmediato)
     op=desrevocar {key}                   -> desbloquea
     op=reset_hwid {key}                   -> desliga el PC (activacion se conserva)
@@ -234,9 +238,31 @@ def admin():
             if techo_viejo >= hoy:
                 base = techo_viejo
         techo = (base + timedelta(days=dias)).isoformat()
-        q("UPDATE licencias SET techo=? WHERE key=?", (techo, key), commit=True)
-        return jsonify(ok=True, techo=techo,
+        # la duracion TAMBIEN se extiende: /activate firma vence = activado +
+        # duracion acotado por techo. Si solo subieramos el techo, una licencia
+        # con la duracion ya agotada seguiria mostrando su vencimiento viejo.
+        dur_nueva = (lic["duracion"] or 0) + dias
+        q("UPDATE licencias SET techo=?, duracion=? WHERE key=?",
+          (techo, dur_nueva, key), commit=True)
+        return jsonify(ok=True, techo=techo, duracion=dur_nueva,
                        nota="el cliente re-abre el launcher y se re-activa solo")
+    if op == "reparar":
+        # recalcula la duracion para que /activate firme hasta el techo actual.
+        # Para licencias renovadas con el server viejo (techo largo, duracion
+        # corta: el .lic seguia venciendo en la fecha original).
+        lic = q("SELECT * FROM licencias WHERE key=?", (key,), one=True)
+        if not lic:
+            return jsonify(error="key no existe"), 404
+        if not lic["techo"]:
+            return jsonify(error="sin techo: nada que reparar"), 400
+        ay, am, ad = map(int, (lic["activado"] or date.today().isoformat()).split("-"))
+        ty, tm, td = map(int, lic["techo"].split("-"))
+        nueva = _days_from_civil(ty, tm, td) - _days_from_civil(ay, am, ad)
+        if nueva <= 0:
+            return jsonify(error="el techo ya vencio"), 400
+        q("UPDATE licencias SET duracion=? WHERE key=?", (nueva, key), commit=True)
+        return jsonify(ok=True, duracion=nueva, techo=lic["techo"],
+                       nota="el cliente re-abre el launcher y recibe el .lic nuevo")
     if op == "revocar":
         q("UPDATE licencias SET revocada=1 WHERE key=?", (key,), commit=True)
         return jsonify(ok=True)

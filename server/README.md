@@ -7,9 +7,9 @@ revocación en vivo. Flask + SQLite, corre gratis en Render.
 
 | Endpoint | Quién lo llama | Qué hace |
 |---|---|---|
-| `POST /activate` | el launcher | `{key, hwid}` → liga el HWID, activa el reloj la 1ª vez, devuelve `cochi.lic` firmado |
+| `POST /activate` | el launcher | `{key, hwid}` → liga el HWID, activa el reloj la 1ª vez, devuelve `cochi.lic` firmado. El launcher TAMBIÉN lo llama en cada arranque con licencia válida: sincroniza renovaciones y borra el `.lic` local si responde `403 key revocada` |
 | `POST /trial` | el launcher | `{hwid}` → trial de 1 día ligado a ese PC (1 por HWID) |
-| `POST /check` | el launcher (al abrir) | revalida `{key, hwid}`; si responde `motivo=revocada`, el launcher borra el `cochi.lic` local → corte inmediato |
+| `POST /check` | el cheat (futuro) | revalidación en caliente `{key, hwid}` con `motivo` |
 | `POST /admin` | tú | crear keys, revocar, listar (protegido con `COCHI_ADMIN_TOKEN`) |
 
 ## Despliegue en Render (10 minutos, gratis)
