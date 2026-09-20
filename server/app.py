@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # ============================================================================
-# app.py — COCHI CS License Server (Flask + SQLite)
+# app.py — COCHI CS License Server (Flask + Supabase/Postgres | SQLite local)
 #
 # Que hace:
-#   - Guarda licencias en SQLite (keys.db): key, tipo, duracion, techo,
+#   - Guarda licencias via db.py (Supabase/Postgres en produccion, SQLite
+#     keys.db en local): key, tipo, duracion, techo,
 #     hwid ligado, fecha de activacion, revocada si/no
 #   - POST /activate : el launcher manda {key, hwid}; registra el HWID la
 #     primera vez, guarda la fecha de activacion, y devuelve el cochi.lic
@@ -21,11 +22,12 @@ import base64
 import json
 import os
 import secrets
-import sqlite3
 import time
 from datetime import date, timedelta
 
 from flask import Flask, jsonify, request
+
+from db import q  # capa de datos: Supabase/Postgres (prod) o SQLite (local)
 
 try:
     import nacl.signing
@@ -33,7 +35,6 @@ except ImportError:
     raise SystemExit("Falta pynacl:  pip install pynacl flask gunicorn")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(HERE, "keys.db")
 PRIVATE_KEY_PATH = os.path.join(HERE, "private.key")
 
 # La clave privada que firma las licencias: la MISMA que licensing/private.key
@@ -59,24 +60,6 @@ TRIAL_GRACIA = 2
 app = Flask(__name__)
 
 
-# ---------------------------------------------------------------- base datos
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("""CREATE TABLE IF NOT EXISTS licencias (
-        key        TEXT PRIMARY KEY,
-        tipo       TEXT NOT NULL,          -- hwid | trial
-        duracion   INTEGER,                -- dias por activacion (NULL = fecha fija)
-        techo      TEXT,                   -- techo absoluto ISO (NULL = sin techo)
-        vence      TEXT,                   -- fecha fija (solo modo clasico)
-        hwid       TEXT,                   -- HWID ligado (NULL hasta /activate)
-        activado   TEXT,                   -- fecha de activacion ISO
-        cliente    TEXT,
-        revocada   INTEGER DEFAULT 0,
-        creada     INTEGER)""")
-    return conn
-
-
 def new_key() -> str:
     raw = secrets.token_hex(4).upper()
     return "COCHI-" + "-".join(raw[i:i + 4] for i in range(0, 8, 4))
@@ -90,8 +73,7 @@ def sign_lic(payload: dict) -> str:
 
 
 def find(key: str):
-    with db() as conn:
-        return conn.execute("SELECT * FROM licencias WHERE key=?", (key,)).fetchone()
+    return q("SELECT * FROM licencias WHERE key=?", (key,), one=True)
 
 
 def hwid_valido(h: str) -> bool:
@@ -120,9 +102,8 @@ def activate():
     hoy = date.today().isoformat()
     primera_vez = lic["hwid"] is None
     if primera_vez:
-        with db() as conn:
-            conn.execute("UPDATE licencias SET hwid=?, activado=? WHERE key=?",
-                         (hwid, hoy, key))
+        q("UPDATE licencias SET hwid=?, activado=? WHERE key=?", (hwid, hoy, key),
+          commit=True)
         activado = hoy
     else:
         activado = lic["activado"] or hoy
@@ -169,18 +150,14 @@ def trial():
     hwid = ((request.get_json(silent=True) or {}).get("hwid") or "").strip().lower()
     if not hwid_valido(hwid):
         return jsonify(error="hwid invalido"), 400
-    with db() as conn:
-        existe = conn.execute(
-            "SELECT 1 FROM licencias WHERE hwid=? AND tipo='trial'", (hwid,)).fetchone()
-        if existe:
-            return jsonify(error="este pc ya uso su trial"), 409
-        key = new_key()
-        techo = (date.today() + timedelta(days=TRIAL_DIAS + TRIAL_GRACIA)).isoformat()
-        conn.execute(
-            "INSERT INTO licencias (key,tipo,duracion,techo,hwid,activado,cliente,creada)"
-            " VALUES (?,'trial',?,?,?,?,?,?)",
-            (key, TRIAL_DIAS, techo, hwid, date.today().isoformat(), "trial-web",
-             int(time.time())))
+    if q("SELECT 1 FROM licencias WHERE hwid=? AND tipo='trial'", (hwid,), one=True):
+        return jsonify(error="este pc ya uso su trial"), 409
+    key = new_key()
+    techo = (date.today() + timedelta(days=TRIAL_DIAS + TRIAL_GRACIA)).isoformat()
+    q("INSERT INTO licencias (key,tipo,duracion,techo,hwid,activado,cliente,creada)"
+      " VALUES (?,'trial',?,?,?,?,?,?)",
+      (key, TRIAL_DIAS, techo, hwid, date.today().isoformat(), "trial-web",
+       int(time.time())), commit=True)
     payload = {"k": key, "t": "trial", "h": hwid, "d": TRIAL_DIAS, "e": techo,
                "n": "trial-web", "i": int(time.time())}
     return jsonify(lic=sign_lic(payload), key=key, vence_techo=techo)
@@ -196,68 +173,65 @@ def admin():
     op=revocar    {key}                   -> bloquea la key (efecto inmediato)
     op=desrevocar {key}                   -> desbloquea
     op=reset_hwid {key}                   -> desliga el PC (activacion se conserva)
+    op=eliminar   {key}                   -> borra el registro definitivamente
     op=listar"""
     data = request.get_json(silent=True) or {}
     if data.get("token") != ADMIN_TOKEN:
         return jsonify(error="token invalido"), 401
     op = data.get("op")
     key = (data.get("key") or "").strip()
-    with db() as conn:
-        if op == "crear":
-            key = new_key()
-            dias = int(data.get("dias", 30))
-            techo = (date.today() + timedelta(days=dias + int(data.get("gracia", 14)))).isoformat()
-            conn.execute(
-                "INSERT INTO licencias (key,tipo,duracion,techo,hwid,cliente,creada)"
-                " VALUES (?,'hwid',?,?,?,?,?)",
-                (key, dias, techo, data.get("hwid", "").strip().lower() or None,
-                 (data.get("cliente") or "sin-nombre").strip(), int(time.time())))
-            return jsonify(key=key, dias=dias, techo=techo,
-                           nota="mandale la key; se activa cuando abra el cheat")
-        if op == "fecha":
-            key = new_key()
-            dias = int(data.get("dias", 30))
-            vence = (date.today() + timedelta(days=dias)).isoformat()
-            conn.execute(
-                "INSERT INTO licencias (key,tipo,vence,cliente,creada)"
-                " VALUES (?,'hwid',?,?,?)",
-                (key, vence, (data.get("cliente") or "sin-nombre").strip(),
-                 int(time.time())))
-            return jsonify(key=key, vence=vence)
-        if op == "renovar":
-            lic = conn.execute("SELECT * FROM licencias WHERE key=?", (key,)).fetchone()
-            if not lic:
-                return jsonify(error="key no existe"), 404
-            dias = int(data.get("dias", 30))
-            hoy = date.today()
-            # base de renovacion: si sigue vigente, desde su vencimiento actual;
-            # si ya expiro, desde hoy (no pierde dias por renovar tarde)
-            base = hoy
-            if lic["techo"]:
-                techo_viejo = date.fromisoformat(lic["techo"])
-                if techo_viejo >= hoy:
-                    base = techo_viejo
-            techo = (base + timedelta(days=dias)).isoformat()
-            conn.execute("UPDATE licencias SET techo=? WHERE key=?", (techo, key))
-            return jsonify(ok=True, techo=techo,
-                           nota="el cliente re-abre el launcher y se re-activa solo")
-        if op == "revocar":
-            conn.execute("UPDATE licencias SET revocada=1 WHERE key=?", (key,))
-            return jsonify(ok=True)
-        if op == "desrevocar":
-            conn.execute("UPDATE licencias SET revocada=0 WHERE key=?", (key,))
-            return jsonify(ok=True)
-        if op == "reset_hwid":
-            # desliga el PC: el proximo /activate liga el HWID nuevo.
-            # la fecha de activacion se conserva (renovar NO reinicia el reloj).
-            conn.execute("UPDATE licencias SET hwid=NULL WHERE key=?", (key,))
-            return jsonify(ok=True, nota="pc desligado; el cliente abre el launcher y se re-liga solo")
-        if op == "eliminar":
-            conn.execute("DELETE FROM licencias WHERE key=?", (key,))
-            return jsonify(ok=True)
-        if op == "listar":
-            rows = conn.execute("SELECT * FROM licencias ORDER BY creada DESC").fetchall()
-            return jsonify(licencias=[dict(r) for r in rows])
+    if op == "crear":
+        key = new_key()
+        dias = int(data.get("dias", 30))
+        techo = (date.today() + timedelta(days=dias + int(data.get("gracia", 14)))).isoformat()
+        q("INSERT INTO licencias (key,tipo,duracion,techo,hwid,cliente,creada)"
+          " VALUES (?,'hwid',?,?,?,?,?)",
+          (key, dias, techo, data.get("hwid", "").strip().lower() or None,
+           (data.get("cliente") or "sin-nombre").strip(), int(time.time())), commit=True)
+        return jsonify(key=key, dias=dias, techo=techo,
+                       nota="mandale la key; se activa cuando abra el cheat")
+    if op == "fecha":
+        key = new_key()
+        dias = int(data.get("dias", 30))
+        vence = (date.today() + timedelta(days=dias)).isoformat()
+        q("INSERT INTO licencias (key,tipo,vence,cliente,creada)"
+          " VALUES (?,'hwid',?,?,?)",
+          (key, vence, (data.get("cliente") or "sin-nombre").strip(),
+           int(time.time())), commit=True)
+        return jsonify(key=key, vence=vence)
+    if op == "renovar":
+        lic = q("SELECT * FROM licencias WHERE key=?", (key,), one=True)
+        if not lic:
+            return jsonify(error="key no existe"), 404
+        dias = int(data.get("dias", 30))
+        hoy = date.today()
+        # base de renovacion: si sigue vigente, desde su vencimiento actual;
+        # si ya expiro, desde hoy (no pierde dias por renovar tarde)
+        base = hoy
+        if lic["techo"]:
+            techo_viejo = date.fromisoformat(lic["techo"])
+            if techo_viejo >= hoy:
+                base = techo_viejo
+        techo = (base + timedelta(days=dias)).isoformat()
+        q("UPDATE licencias SET techo=? WHERE key=?", (techo, key), commit=True)
+        return jsonify(ok=True, techo=techo,
+                       nota="el cliente re-abre el launcher y se re-activa solo")
+    if op == "revocar":
+        q("UPDATE licencias SET revocada=1 WHERE key=?", (key,), commit=True)
+        return jsonify(ok=True)
+    if op == "desrevocar":
+        q("UPDATE licencias SET revocada=0 WHERE key=?", (key,), commit=True)
+        return jsonify(ok=True)
+    if op == "reset_hwid":
+        # desliga el PC: el proximo /activate liga el HWID nuevo.
+        # la fecha de activacion se conserva (renovar NO reinicia el reloj).
+        q("UPDATE licencias SET hwid=NULL WHERE key=?", (key,), commit=True)
+        return jsonify(ok=True, nota="pc desligado; el cliente abre el launcher y se re-liga solo")
+    if op == "eliminar":
+        q("DELETE FROM licencias WHERE key=?", (key,), commit=True)
+        return jsonify(ok=True)
+    if op == "listar":
+        return jsonify(licencias=q("SELECT * FROM licencias ORDER BY creada DESC"))
     return jsonify(error="op desconocida"), 400
 
 
