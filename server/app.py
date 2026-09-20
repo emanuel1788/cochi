@@ -27,7 +27,7 @@ from datetime import date, timedelta
 
 from flask import Flask, jsonify, request
 
-from db import q  # capa de datos: Supabase/Postgres (prod) o SQLite (local)
+from db import q, ENGINE  # capa de datos: Supabase/Postgres (prod) o SQLite (local)
 
 try:
     import nacl.signing
@@ -78,6 +78,18 @@ def find(key: str):
 
 def hwid_valido(h: str) -> bool:
     return isinstance(h, str) and len(h) == 64 and all(c in "0123456789abcdefABCDEF" for c in h)
+
+
+# ---------------------------------------------------------------- health
+@app.get("/health")
+def health():
+    """Para UptimeRobot: mantiene despierto Render Y activo Supabase
+    (cada ping ejecuta una consulta real contra la base de datos)."""
+    try:
+        q("SELECT 1 AS ok", (), one=True)
+        return jsonify(ok=True, db=ENGINE)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 500
 
 
 # ---------------------------------------------------------------- cliente API
