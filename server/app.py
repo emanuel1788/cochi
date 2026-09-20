@@ -55,7 +55,13 @@ else:
         "private.key junto a app.py. NUNCA subas la clave a un repo publico.")
 SIGNER = nacl.signing.SigningKey(SEED)
 
-ADMIN_TOKEN = os.environ.get("COCHI_ADMIN_TOKEN", "cambia-esto-en-produccion")
+ADMIN_TOKEN = os.environ.get("COCHI_ADMIN_TOKEN", "").strip()
+if not ADMIN_TOKEN:
+    raise SystemExit(
+        "Sin COCHI_ADMIN_TOKEN: define la variable de entorno con el token admin.\n"
+        "El default publico del codigo original era explotable (crear/revocar\n"
+        "licencias sin autenticacion). Genera uno con:  python -c \"import secrets;\n"
+        "print('cochi-' + secrets.token_hex(16))\"")
 TRIAL_DIAS = 1
 TRIAL_GRACIA = 1
 
@@ -115,12 +121,17 @@ def activate():
 
     hoy = date.today().isoformat()
     primera_vez = lic["hwid"] is None
-    if primera_vez:
-        q("UPDATE licencias SET hwid=?, activado=? WHERE key=?", (hwid, hoy, key),
-          commit=True)
+    # El reloj de activacion SOLO se fija una vez y se PERSISTE. Antes, una key
+    # creada con hwid preligado no ejecutaba este UPDATE (primera_vez False) y
+    # el fallback 'or hoy' recalculaba el vencimiento con la fecha del dia en
+    # cada /activate sin guardarla: la licencia se renovaba sola para siempre.
+    reloj_pendiente = lic["activado"] is None
+    if primera_vez or reloj_pendiente:
+        q("UPDATE licencias SET hwid=?, activado=? WHERE key=?",
+          (hwid if primera_vez else lic["hwid"], hoy, key), commit=True)
         activado = hoy
     else:
-        activado = lic["activado"] or hoy
+        activado = lic["activado"]
 
     # calcular vencimiento efectivo igual que license.hpp (dias absolutos)
     def days_from_iso(s):
