@@ -8,8 +8,8 @@ revocación en vivo. Flask + SQLite, corre gratis en Render.
 | Endpoint | Quién lo llama | Qué hace |
 |---|---|---|
 | `POST /activate` | el launcher | `{key, hwid}` → liga el HWID, activa el reloj la 1ª vez, devuelve `cochi.lic` firmado |
-| `POST /trial` | el launcher | `{hwid}` → trial de 3 días ligado a ese PC (1 por HWID) |
-| `POST /check` | el cheat (futuro) | revalidación en caliente `{key, hwid}` |
+| `POST /trial` | el launcher | `{hwid}` → trial de 1 día ligado a ese PC (1 por HWID) |
+| `POST /check` | el launcher (al abrir) | revalida `{key, hwid}`; si responde `motivo=revocada`, el launcher borra el `cochi.lic` local → corte inmediato |
 | `POST /admin` | tú | crear keys, revocar, listar (protegido con `COCHI_ADMIN_TOKEN`) |
 
 ## Despliegue en Render (10 minutos, gratis)
@@ -102,7 +102,7 @@ habrá actividad a diario y no se pausa. Cuenta gratis: 2 proyectos, 500 MB
 1. Abre el Launcher (descarga sola la carpeta de instalación)
 2. Si no hay licencia: menu → [6] Licencia
 3. Pega su key "COCHI-XXXX-XXXX" (1 sola vez, se recuerda el PC)
-   — o pulsa trial y recibe 3 dias gratis al instante
+   — o pulsa trial y recibe 1 dia gratis al instante
 4. [2] Ejecutar cheat
 ```
 

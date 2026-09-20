@@ -10,7 +10,9 @@
 #     primera vez, guarda la fecha de activacion, y devuelve el cochi.lic
 #     FIRMADO (Ed25519, la misma clave que ya usas) listo para guardar
 #   - POST /check    : revalidacion en caliente (key + hwid) -> {"valid":true}
-#   - POST /trial    : trial self-service {hwid} -> 3 dias, 1 por HWID,
+#     o {"valid":false, "motivo": revocada|desconocida|otro-pc|expirada};
+#     el launcher borra el .lic local SOLO con motivo='revocada'
+#   - POST /trial    : trial self-service {hwid} -> 1 dia, 1 por HWID,
 #     ligado a ese HWID (no compartible)
 #   - POST /admin    : operaciones del dueno (crear/revocar/listar),
 #     protegidas con ADMIN_TOKEN
@@ -54,8 +56,8 @@ else:
 SIGNER = nacl.signing.SigningKey(SEED)
 
 ADMIN_TOKEN = os.environ.get("COCHI_ADMIN_TOKEN", "cambia-esto-en-produccion")
-TRIAL_DIAS = 3
-TRIAL_GRACIA = 2
+TRIAL_DIAS = 1
+TRIAL_GRACIA = 1
 
 app = Flask(__name__)
 
@@ -145,12 +147,19 @@ def activate():
 
 @app.post("/check")
 def check():
-    """Revalidacion en caliente del cheat: {key, hwid} -> valid true/false."""
+    """Revalidacion en caliente: {key, hwid} -> {"valid": true|false, "motivo": ...}.
+    motivo: revocada | desconocida | otro-pc | expirada. El launcher borra el
+    .lic local SOLO cuando motivo == 'revocada' (corte explicito del dueno);
+    sin internet u otros motivos no tocan la licencia local."""
     data = request.get_json(silent=True) or {}
     lic = find((data.get("key") or "").strip())
     hwid = (data.get("hwid") or "").strip().lower()
-    if not lic or lic["revocada"] or not hwid_valido(hwid) or lic["hwid"] != hwid:
-        return jsonify(valid=False), 200
+    if not lic:
+        return jsonify(valid=False, motivo="desconocida"), 200
+    if lic["revocada"]:
+        return jsonify(valid=False, motivo="revocada"), 200
+    if not hwid_valido(hwid) or lic["hwid"] != hwid:
+        return jsonify(valid=False, motivo="otro-pc"), 200
     if lic["techo"] and date.today().isoformat() > lic["techo"]:
         return jsonify(valid=False, motivo="expirada"), 200
     return jsonify(valid=True, vence=lic["techo"] or lic["vence"]), 200
@@ -158,7 +167,7 @@ def check():
 
 @app.post("/trial")
 def trial():
-    """Trial self-service: {hwid} -> 1 trial de 3 dias por HWID, ligado."""
+    """Trial self-service: {hwid} -> 1 trial de 1 dia por HWID, ligado."""
     hwid = ((request.get_json(silent=True) or {}).get("hwid") or "").strip().lower()
     if not hwid_valido(hwid):
         return jsonify(error="hwid invalido"), 400
