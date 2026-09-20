@@ -30,6 +30,9 @@ revocación en vivo. Flask + SQLite, corre gratis en Render.
      (es la MISMA clave que firmó tu pubkey.hpp: el cheat publicado verifica
      los .lic del server sin recompilar nada)
    - `COCHI_ADMIN_TOKEN` = una contraseña larga inventada para tu panel admin.
+   - `SUPABASE_DB_URL` = (recomendado) URI de Supabase para que los datos sean
+     PERSISTENTES — sin ella el server usa SQLite y Render borra `keys.db` en
+     cada redeploy/reinicio. Ver sección "Persistencia con Supabase" abajo.
 
 4. Deploy. Te da una URL tipo `https://cochi-licenses.onrender.com`.
 
@@ -53,6 +56,46 @@ curl -X POST https://TU-SERVER.onrender.com/admin -H "Content-Type: application/
   -d '{"token":"TU_TOKEN","op":"revocar","key":"COCHI-XXXX-XXXX"}'
 ```
 
+## Persistencia con Supabase (gratis, 5 minutos)
+
+El disco de Render free es **efímero**: cada redeploy o reinicio borra
+`keys.db` y todas las licencias registradas desaparecen. La solución es mover
+la base de datos a Supabase (Postgres gestionado, free tier, los datos
+quedan en SU infraestructura y sobreviven a todo):
+
+1. Crea cuenta en https://supabase.com (con GitHub) → **New project**:
+   nombre `cochi`, password de DB (guárdalo), región Virginia/Eastus.
+   Espera ~2 min a que el proyecto quede listo.
+
+2. Copia la URI de conexión: **Project Settings → Database → Connection
+   string → URI**. Se ve así:
+   ```
+   postgresql://postgres:[TU-PASSWORD]@db.cohicolocoxyz.supabase.co:5432/postgres
+   ```
+   Sustituye `[TU-PASSWORD]` por tu password. Si tiene caracteres especiales
+   (`@ # % &` etc.), URL-encódalos: `@` → `%40`, `#` → `%23`, `%` → `%25`.
+
+3. Pega la URI como variable `SUPABASE_DB_URL` en Render (Dashboard →
+   tu servicio → Environment → Add → pega → Save). Render redespliega solo.
+
+4. **Verifica:** abre los logs del servicio en Render y busca la línea
+   `[db] Supabase/Postgres conectado: db.xxx.supabase.co`. Después crea una
+   key desde tu GUI (pestaña Server → Crear) y confírmala en Supabase
+   (Table Editor → tabla `licencias`).
+
+5. **Migración (solo si ya tenías clientes):** exporta el SQLite actual
+   desde la pestaña Shell de Supabase (o pídemelo y lo hago):
+   ```sql
+   -- crea la tabla y pega aquí los INSERT de tu keys.db
+   ```
+
+Nota sobre el free tier de Supabase: si el proyecto no recibe consultas
+SQL durante una semana, Supabase lo **pausa** (te avisa por email antes;
+un click en la dashboard lo restaura con TODOS los datos intactos — nunca
+borra nada hasta pasados 12 meses de pausa). Con clientes usando el cheat
+habrá actividad a diario y no se pausa. Cuenta gratis: 2 proyectos, 500 MB
+(suficiente para cientos de miles de licencias).
+
 ## Experiencia del cliente con este sistema
 
 ```
@@ -74,8 +117,8 @@ la URL del server. Con eso queda despierto 24/7.
 
 ## Notas de seguridad
 
-- La DB `keys.db` vive en el server (Render la persiste en el disco del servicio;
-  para persistencia garantizada usa Postgres free tier — migración trivial).
+- Con `SUPABASE_DB_URL` la base de datos vive en Supabase (persistente);
+  sin ella, `keys.db` en Render (se pierde en cada redeploy — solo para pruebas).
 - El rate-limit lo pone Render/Cloudflare delante; para V1 es suficiente.
 - El token admin NUNCA va en el repo ni en el launcher del cliente.
 - `private.key`/`LICENSE_SEED` comprometidos = regenerar todo (genkeys + recompilar
