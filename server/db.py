@@ -21,7 +21,7 @@ _IS_PG = False
 _url = (os.environ.get("SUPABASE_DB_URL") or "").strip()
 
 if _url:
-    from urllib.parse import quote, urlparse
+    from urllib.parse import unquote, urlparse
 
     u = urlparse(_url if "://" in _url else "postgres://" + _url)
 
@@ -32,8 +32,8 @@ if _url:
             host=u.hostname,
             port=u.port or 5432,
             dbname=(u.path or "/postgres").lstrip("/") or "postgres",
-            user=quote(u.username or "postgres"),
-            password=quote(u.password or ""),
+            user=unquote(u.username or "postgres"),
+            password=unquote(u.password or ""),   # acepta password URL-encodeado o plano
             sslmode="require",          # obligatorio para Supabase
             connect_timeout=10,
         )
@@ -71,8 +71,11 @@ if _url:
                     _PG.commit()
                 if return_sql:
                     c.execute(return_sql, params)
-                cols = [d[0] for d in c.description] if c.description else []
-                rows = [dict(zip(cols, r)) for r in c.fetchall()]
+                if c.description is None:      # INSERT/UPDATE/DELETE: sin filas
+                    rows = []
+                else:
+                    cols = [d[0] for d in c.description]
+                    rows = [dict(zip(cols, r)) for r in c.fetchall()]
         return (rows[0] if rows else None) if one else rows
 
 else:
