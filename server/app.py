@@ -26,6 +26,7 @@ import hmac
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 import traceback
@@ -101,8 +102,12 @@ def health():
     try:
         q("SELECT 1 AS ok", (), one=True)
         import platform
+        hilos = sorted(t.name for t in threading.enumerate())
         bot_vivo = any(t.name == "discord-bot" and t.is_alive() for t in threading.enumerate())
         resp = jsonify(ok=True, db=ENGINE, python=platform.python_version(),
+                       pid=os.getpid(), argv=sys.argv[1:],
+                       web_concurrency=os.environ.get("WEB_CONCURRENCY"),
+                       hilos=hilos,
                        bot_env=bool(os.environ.get("DISCORD_TOKEN")),
                        bot_thread=bot_vivo, bot_error=BOT_ERROR, bot_state=BOT_STATE)
         resp.headers["Cache-Control"] = "no-store"
