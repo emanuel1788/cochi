@@ -873,4 +873,6 @@ def run_bot():
 
 
 if __name__ == "__main__":
+    print(f"[bot] proceso separado pid={os.getpid()} | owner={CFG.get('owner_id')!r} "
+          f"guild={CFG.get('guild_id')!r} | arrancando gateway...", flush=True)
     bot.run(CFG["token"])
