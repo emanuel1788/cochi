@@ -26,6 +26,7 @@ import hmac
 import json
 import os
 import secrets
+import threading
 import time
 from datetime import date, timedelta
 
@@ -94,10 +95,14 @@ def hwid_valido(h: str) -> bool:
 @app.get("/health")
 def health():
     """Para UptimeRobot: mantiene despierto Render Y activo Supabase
-    (cada ping ejecuta una consulta real contra la base de datos)."""
+    (cada ping ejecuta una consulta real contra la base de datos).
+    Incluye diagnostico: version de python y estado del thread del bot."""
     try:
         q("SELECT 1 AS ok", (), one=True)
-        return jsonify(ok=True, db=ENGINE)
+        import platform
+        bot_vivo = any(t.name == "discord-bot" and t.is_alive() for t in threading.enumerate())
+        return jsonify(ok=True, db=ENGINE, python=platform.python_version(),
+                       bot_thread=bot_vivo)
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 500
 
