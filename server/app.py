@@ -136,9 +136,9 @@ def botlog():
         with open(BOT_LOG, "rb") as f:
             f.seek(0, 2)
             size = f.tell()
-            f.seek(max(0, size - 4000))
+            f.seek(max(0, size - 12000))
             tail = f.read().decode(errors="replace")
-        log_txt = f"--- bot.log ({size} bytes, tail) ---\n{tail}"
+        log_txt = f"--- bot.log ({size} bytes, tail 12k) ---\n{tail}"
     except OSError:
         log_txt = "(sin bot.log: el supervisor no escribio nada)"
     return log_txt + "\n--- procesos /proc ---\n" + "\n".join(procs[-40:]) + "\n", 200, respheaders
