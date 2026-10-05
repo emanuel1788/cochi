@@ -26,6 +26,7 @@ import hmac
 import json
 import os
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -156,7 +157,8 @@ def health():
                        pid=os.getpid(),
                        bot_env=bool(os.environ.get("DISCORD_TOKEN")),
                        bot_process=_bot_proceso_vivo(),
-                       bot_thread=BOT_ARRANCADO and not _bot_proceso_vivo(),
+                       bot_pid=(BOT_PROC.pid if BOT_PROC is not None
+                                and BOT_PROC.poll() is None else None),
                        bot_error=BOT_ERROR, bot_state=BOT_STATE)
         resp.headers["Cache-Control"] = "no-store"
         return resp
@@ -449,59 +451,91 @@ def _civil_from_days(z):
     return y + (m <= 2), m, d
 
 
-# ---- Bot de Discord ----
-# NO nace a nivel modulo: gunicorn importa app.py en el MASTER y despues hace
-# fork al worker; un thread creado antes del fork muere en el fork (visto en
-# /health: estado heredado + hilos=['MainThread']). Tambien NO corre como
-# proceso aparte si el startCommand del dashboard no lanza el supervisor.
-# Solucion: lazy-start en el PRIMER request (post-fork, dentro del worker):
-# el thread nace y vive en el worker. Si el startCommand ya corre bot.py como
-# proceso (supervisor), se detecta via /proc y no se duplica.
+# ---- Bot de Discord: PROCESO HIJO + watchdog (sin asyncio en threads) ----
+# Historia documentada:
+#   (1) thread a nivel modulo: moria en el fork master->worker de gunicorn
+#       (/health mostraba estado heredado con hilos=['MainThread']).
+#   (2) thread post-fork con reintento: al morir el login, re-correr bot.run()
+#       sobre el mismo objeto Bot rompe aiohttp ("Session is closed").
+# Solucion: el worker (post-fork) lanza `python -u bot.py` como PROCESO HIJO
+# (asyncio en el main thread de ese proceso, identico a como corre en local)
+# y un watchdog lo relanza con backoff si muere. La salida queda en
+# /tmp/cochi/bot.log (verla en /botlog) y /proc permite verificarlo en /health.
+BOT_LOG_DIR = "/tmp/cochi"
+BOT_LOCKFILE = os.path.join(BOT_LOG_DIR, "bot.lock")
 BOT_LOCK = threading.Lock()
 BOT_ARRANCADO = False
+BOT_PROC = None
 BOT_ERROR = None
 BOT_STATE = "no arrancado"
 
 
-def _bot_worker():
-    """Corre el bot en bucle con reintento (thread dentro del worker)."""
-    global BOT_ERROR, BOT_STATE
-    import bot as cochi_bot
+def _lock_owner_fresh() -> bool:
+    """True si OTRO proceso renovó el lock hace menos de 90s (multi-worker)."""
+    try:
+        return (time.time() - os.stat(BOT_LOCKFILE).st_mtime) < 90
+    except OSError:
+        return False
+
+
+def _bot_watchdog():
+    """Mantiene vivo `python -u bot.py` como proceso hijo, con backoff."""
+    global BOT_ERROR, BOT_STATE, BOT_PROC
+    fallos = 0
     while True:
         try:
-            BOT_STATE = "conectando"
-            print("[bot] conectando (thread en worker gunicorn)...", flush=True)
-            cochi_bot.run_bot()
-            BOT_STATE = "run_bot retorno; reintentando en 60s"
-            print("[bot] " + BOT_STATE, flush=True)
+            vivo = _bot_proceso_vivo()
+            hijo_vivo = BOT_PROC is not None and BOT_PROC.poll() is None
+            if vivo is True or hijo_vivo:
+                BOT_STATE = (f"corriendo (pid {BOT_PROC.pid})" if BOT_PROC
+                             else "corriendo (proceso bot externo)")
+                fallos = 0
+                try:
+                    os.utime(BOT_LOCKFILE)
+                except OSError:
+                    pass
+            elif _lock_owner_fresh():
+                BOT_STATE = "otro worker ya maneja el proceso bot"
+            else:
+                if BOT_PROC is not None and BOT_PROC.poll() is not None:
+                    BOT_ERROR = f"bot.py salio con codigo {BOT_PROC.returncode}"
+                    BOT_STATE = f"proceso bot muerto (codigo {BOT_PROC.returncode}); relanzando"
+                    fallos += 1
+                time.sleep(min(300, 15 * (2 ** min(fallos, 5))))
+                if _lock_owner_fresh():
+                    continue
+                os.makedirs(BOT_LOG_DIR, exist_ok=True)
+                try:
+                    os.close(os.open(BOT_LOCKFILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                except FileExistsError:
+                    pass
+                os.utime(BOT_LOCKFILE)
+                logf = open(BOT_LOG, "ab")
+                BOT_PROC = subprocess.Popen(
+                    [sys.executable, "-u", os.path.join(HERE, "bot.py")],
+                    stdout=logf, stderr=logf)
+                BOT_STATE = f"proceso bot lanzado (pid {BOT_PROC.pid})"
+                print(f"[watchdog] bot.py lanzado pid={BOT_PROC.pid} (fallos previos={fallos})",
+                      flush=True)
         except BaseException as e:
-            BOT_ERROR = f"{type(e).__name__}: {e}"
-            BOT_STATE = "crash; reintentando en 60s"
-            print("[bot] CRASH " + BOT_ERROR, flush=True)
+            BOT_ERROR = f"watchdog: {type(e).__name__}: {e}"
+            BOT_STATE = "error en watchdog"
             traceback.print_exc()
-        time.sleep(60)
+        time.sleep(30)
 
 
-def _asegurar_bot():
+@app.before_request
+def _lanzar_bot():
+    """Primer request al worker -> arranca el watchdog una sola vez."""
     global BOT_ARRANCADO, BOT_STATE
     if BOT_ARRANCADO or not os.environ.get("DISCORD_TOKEN"):
         return
     with BOT_LOCK:
         if BOT_ARRANCADO:
             return
-        if _bot_proceso_vivo() is True:
-            BOT_ARRANCADO = True
-            BOT_STATE = "bot ya corre como proceso separado (supervisor)"
-            return
-        threading.Thread(target=_bot_worker, daemon=True, name="discord-bot").start()
+        threading.Thread(target=_bot_watchdog, daemon=True, name="bot-watchdog").start()
         BOT_ARRANCADO = True
-        BOT_STATE = "thread iniciado en worker (post-fork)"
-
-
-@app.before_request
-def _lanzar_bot():
-    """Primer request al worker -> arranca el bot una sola vez."""
-    _asegurar_bot()
+        BOT_STATE = "watchdog iniciado (proceso bot en ~15s)"
 
 
 if __name__ == "__main__":
