@@ -135,6 +135,7 @@ if not CFG.get("token") and os.environ.get("DISCORD_TOKEN"):
         "wallet": os.environ.get("COCHI_WALLET", ""),
         "server_url": os.environ.get("SERVER_URL", "https://cochi-licenses.onrender.com"),
         "admin_token": os.environ.get("COCHI_ADMIN_TOKEN", ""),
+        "panel_msg_id": os.environ.get("COCHI_PANEL_MSG_ID", ""),
     }
     print("[+] Bot en modo env vars (hosting remoto)")
 if not CFG.get("token"):
