@@ -387,5 +387,13 @@ def _civil_from_days(z):
     return y + (m <= 2), m, d
 
 
+# ---- Bot de Discord en thread de fondo (Render: setear DISCORD_TOKEN) ----
+if os.environ.get("DISCORD_TOKEN"):
+    import threading
+    import bot as cochi_bot
+
+    threading.Thread(target=cochi_bot.run_bot, daemon=True, name="discord-bot").start()
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000)
