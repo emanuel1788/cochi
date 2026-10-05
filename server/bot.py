@@ -30,6 +30,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 from datetime import date
 
 # Windows + aiodns exige SelectorEventLoop (el default de Python 3.8+ es Proactor)
@@ -864,6 +865,10 @@ async def on_command_error(ctx, error):
 
 def run_bot():
     """Punto de entrada para hosting remoto (app.py lanza esto en un thread)."""
+    owner_env = os.environ.get("DISCORD_OWNER_ID", "")
+    print(f"[bot] pid={os.getpid()} thread={threading.current_thread().name} "
+          f"owner_id_env={owner_env!r} guild_id_env={os.environ.get('DISCORD_GUILD_ID', '')!r} "
+          f"cfg_owner={CFG.get('owner_id', '')!r}", flush=True)
     bot.run(CFG["token"])
 
 
