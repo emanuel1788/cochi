@@ -478,42 +478,75 @@ def _lock_owner_fresh() -> bool:
         return False
 
 
+def _clasificar_salida() -> str:
+    """Clasifica por que murio bot.py leyendo el tail de bot.log."""
+    try:
+        with open(BOT_LOG, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8000))
+            txt = f.read().decode(errors="replace")
+    except OSError:
+        return "sin log"
+    if "PrivilegedIntentsRequired" in txt:
+        return "intents privilegiados OFF en el portal de Discord"
+    if "LoginFailure" in txt or "Improper token" in txt:
+        return "TOKEN invalido (revisar DISCORD_TOKEN en Render)"
+    if ("You are being rate limited" in txt
+            or "used Cloudflare to restrict access" in txt):
+        return "Cloudflare 429/1015: IP de salida de Render baneada temporalmente"
+    if "Session is closed" in txt:
+        return "aiohttp: session cerrada"
+    return "crash (ver /botlog)"
+
+
 def _bot_watchdog():
-    """Mantiene vivo `python -u bot.py` como proceso hijo, con backoff."""
+    """Mantiene vivo `python -u bot.py` como proceso hijo, con backoff.
+    Backoff hasta 10 min: no alimentar rate limits de Cloudflare."""
     global BOT_ERROR, BOT_STATE, BOT_PROC
     fallos = 0
     while True:
         try:
             vivo = _bot_proceso_vivo()
             hijo_vivo = BOT_PROC is not None and BOT_PROC.poll() is None
-            if vivo is True or hijo_vivo:
-                BOT_STATE = (f"corriendo (pid {BOT_PROC.pid})" if BOT_PROC
-                             else "corriendo (proceso bot externo)")
+            if hijo_vivo:
+                BOT_STATE = f"corriendo (pid {BOT_PROC.pid})"
                 fallos = 0
                 try:
                     os.utime(BOT_LOCKFILE)
                 except OSError:
                     pass
-            elif _lock_owner_fresh():
-                BOT_STATE = "otro worker ya maneja el proceso bot"
+            elif vivo is True:
+                BOT_STATE = "corriendo (proceso bot externo)"
+                fallos = 0
+                try:
+                    os.utime(BOT_LOCKFILE)
+                except OSError:
+                    pass
             else:
                 if BOT_PROC is not None and BOT_PROC.poll() is not None:
-                    BOT_ERROR = f"bot.py salio con codigo {BOT_PROC.returncode}"
-                    BOT_STATE = f"proceso bot muerto (codigo {BOT_PROC.returncode}); relanzando"
+                    razon = _clasificar_salida()
+                    BOT_ERROR = f"bot.py salio con codigo {BOT_PROC.returncode}: {razon}"
+                    BOT_STATE = f"proceso bot muerto ({razon}); relanzando"
                     fallos += 1
-                time.sleep(min(300, 15 * (2 ** min(fallos, 5))))
-                if _lock_owner_fresh():
+                elif BOT_PROC is None:
+                    BOT_STATE = "primer arranque del proceso bot"
+                time.sleep(min(600, 30 * (2 ** min(fallos, 4))))
+                if _lock_owner_fresh() and BOT_PROC is None:
+                    BOT_STATE = "otro worker ya maneja el proceso bot"
                     continue
                 os.makedirs(BOT_LOG_DIR, exist_ok=True)
                 try:
                     os.close(os.open(BOT_LOCKFILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
                 except FileExistsError:
                     pass
-                os.utime(BOT_LOCKFILE)
                 logf = open(BOT_LOG, "ab")
                 BOT_PROC = subprocess.Popen(
                     [sys.executable, "-u", os.path.join(HERE, "bot.py")],
                     stdout=logf, stderr=logf)
+                logf.close()
+                with open(BOT_LOCKFILE, "w") as f:
+                    f.write(str(BOT_PROC.pid))
                 BOT_STATE = f"proceso bot lanzado (pid {BOT_PROC.pid})"
                 print(f"[watchdog] bot.py lanzado pid={BOT_PROC.pid} (fallos previos={fallos})",
                       flush=True)
