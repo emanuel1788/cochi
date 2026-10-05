@@ -29,7 +29,6 @@ import secrets
 import sys
 import threading
 import time
-import traceback
 from datetime import date, timedelta
 
 from flask import Flask, jsonify, request
@@ -93,6 +92,24 @@ def hwid_valido(h: str) -> bool:
     return isinstance(h, str) and len(h) == 64 and all(c in "0123456789abcdefABCDEF" for c in h)
 
 
+def _bot_proceso_vivo():
+    """En Linux (Render): busca un proceso cuyo cmdline contenga bot.py.
+    En Windows (local) no hay /proc: devuelve None."""
+    if not os.path.isdir("/proc"):
+        return None
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmd = f.read().decode(errors="replace")
+        except OSError:
+            continue
+        if "bot.py" in cmd:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------- health
 @app.get("/health")
 def health():
@@ -102,14 +119,12 @@ def health():
     try:
         q("SELECT 1 AS ok", (), one=True)
         import platform
-        hilos = sorted(t.name for t in threading.enumerate())
-        bot_vivo = any(t.name == "discord-bot" and t.is_alive() for t in threading.enumerate())
         resp = jsonify(ok=True, db=ENGINE, python=platform.python_version(),
                        pid=os.getpid(), argv=sys.argv[1:],
-                       web_concurrency=os.environ.get("WEB_CONCURRENCY"),
-                       hilos=hilos,
                        bot_env=bool(os.environ.get("DISCORD_TOKEN")),
-                       bot_thread=bot_vivo, bot_error=BOT_ERROR, bot_state=BOT_STATE)
+                       bot_mode=BOT_MODE,
+                       bot_process=_bot_proceso_vivo(),
+                       bot_error=None, bot_state="ver logs de Render (proceso bot)")
         resp.headers["Cache-Control"] = "no-store"
         return resp
     except Exception as e:
@@ -401,29 +416,12 @@ def _civil_from_days(z):
     return y + (m <= 2), m, d
 
 
-# ---- Bot de Discord en thread de fondo (Render: setear DISCORD_TOKEN) ----
-BOT_ERROR = None
-BOT_STATE = "no arrancado"
-if os.environ.get("DISCORD_TOKEN"):
-    import bot as cochi_bot
-
-    def _bot_thread():
-        global BOT_ERROR, BOT_STATE
-        try:
-            BOT_STATE = "conectando"
-            print("[bot-thread] conectando...", flush=True)
-            cochi_bot.run_bot()
-            BOT_STATE = "run_bot retorno sin excepcion (gateway cerrado)"
-            print("[bot-thread] " + BOT_STATE, flush=True)
-        except BaseException as e:
-            BOT_ERROR = f"{type(e).__name__}: {e}"
-            BOT_STATE = "crash"
-            print("[bot-thread] CRASH " + BOT_ERROR, flush=True)
-            print(traceback.format_exc()[-1500:], flush=True)
-
-    hilo = threading.Thread(target=_bot_thread, daemon=True, name="discord-bot")
-    BOT_STATE = "thread iniciado"   # antes de start(): evita race con un crash inmediato
-    hilo.start()
+# ---- Bot de Discord ----
+# NO corre dentro de este proceso web: gunicorn (master/worker/fork) mata o
+# aísla threads de fondo (vimos en /health estado heredado por fork con el
+# thread ausente). El bot corre como PROCESO SEPARADO: startCommand lanza
+# `python -u bot.py` en bucle supervisor + gunicorn para el HTTP (render.yaml).
+BOT_MODE = "proceso separado (startCommand: python -u bot.py + supervisor)"
 
 
 if __name__ == "__main__":
