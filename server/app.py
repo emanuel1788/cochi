@@ -29,6 +29,7 @@ import secrets
 import sys
 import threading
 import time
+import traceback
 from datetime import date, timedelta
 
 from flask import Flask, jsonify, request
@@ -152,11 +153,11 @@ def health():
         q("SELECT 1 AS ok", (), one=True)
         import platform
         resp = jsonify(ok=True, db=ENGINE, python=platform.python_version(),
-                       pid=os.getpid(), argv=sys.argv[1:],
+                       pid=os.getpid(),
                        bot_env=bool(os.environ.get("DISCORD_TOKEN")),
-                       bot_mode=BOT_MODE,
                        bot_process=_bot_proceso_vivo(),
-                       bot_error=None, bot_state="ver logs de Render (proceso bot)")
+                       bot_thread=BOT_ARRANCADO and not _bot_proceso_vivo(),
+                       bot_error=BOT_ERROR, bot_state=BOT_STATE)
         resp.headers["Cache-Control"] = "no-store"
         return resp
     except Exception as e:
@@ -449,11 +450,58 @@ def _civil_from_days(z):
 
 
 # ---- Bot de Discord ----
-# NO corre dentro de este proceso web: gunicorn (master/worker/fork) mata o
-# aísla threads de fondo (vimos en /health estado heredado por fork con el
-# thread ausente). El bot corre como PROCESO SEPARADO: startCommand lanza
-# `python -u bot.py` en bucle supervisor + gunicorn para el HTTP (render.yaml).
-BOT_MODE = "proceso separado (startCommand: python -u bot.py + supervisor)"
+# NO nace a nivel modulo: gunicorn importa app.py en el MASTER y despues hace
+# fork al worker; un thread creado antes del fork muere en el fork (visto en
+# /health: estado heredado + hilos=['MainThread']). Tambien NO corre como
+# proceso aparte si el startCommand del dashboard no lanza el supervisor.
+# Solucion: lazy-start en el PRIMER request (post-fork, dentro del worker):
+# el thread nace y vive en el worker. Si el startCommand ya corre bot.py como
+# proceso (supervisor), se detecta via /proc y no se duplica.
+BOT_LOCK = threading.Lock()
+BOT_ARRANCADO = False
+BOT_ERROR = None
+BOT_STATE = "no arrancado"
+
+
+def _bot_worker():
+    """Corre el bot en bucle con reintento (thread dentro del worker)."""
+    global BOT_ERROR, BOT_STATE
+    import bot as cochi_bot
+    while True:
+        try:
+            BOT_STATE = "conectando"
+            print("[bot] conectando (thread en worker gunicorn)...", flush=True)
+            cochi_bot.run_bot()
+            BOT_STATE = "run_bot retorno; reintentando en 60s"
+            print("[bot] " + BOT_STATE, flush=True)
+        except BaseException as e:
+            BOT_ERROR = f"{type(e).__name__}: {e}"
+            BOT_STATE = "crash; reintentando en 60s"
+            print("[bot] CRASH " + BOT_ERROR, flush=True)
+            traceback.print_exc()
+        time.sleep(60)
+
+
+def _asegurar_bot():
+    global BOT_ARRANCADO, BOT_STATE
+    if BOT_ARRANCADO or not os.environ.get("DISCORD_TOKEN"):
+        return
+    with BOT_LOCK:
+        if BOT_ARRANCADO:
+            return
+        if _bot_proceso_vivo() is True:
+            BOT_ARRANCADO = True
+            BOT_STATE = "bot ya corre como proceso separado (supervisor)"
+            return
+        threading.Thread(target=_bot_worker, daemon=True, name="discord-bot").start()
+        BOT_ARRANCADO = True
+        BOT_STATE = "thread iniciado en worker (post-fork)"
+
+
+@app.before_request
+def _lanzar_bot():
+    """Primer request al worker -> arranca el bot una sola vez."""
+    _asegurar_bot()
 
 
 if __name__ == "__main__":
