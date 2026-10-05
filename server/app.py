@@ -110,6 +110,38 @@ def _bot_proceso_vivo():
     return False
 
 
+BOT_LOG = "/tmp/cochi/bot.log"
+
+
+@app.get("/botlog")
+def botlog():
+    """Diagnostico del proceso bot: tail de su salida + procesos vivos del
+    contenedor. Sin secretos (solo textos que el propio bot imprime)."""
+    respheaders = {"Cache-Control": "no-store"}
+    procs = []
+    if os.path.isdir("/proc"):
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmd = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
+            except OSError:
+                continue
+            if cmd:
+                procs.append(f"{pid}: {cmd[:200]}")
+    try:
+        with open(BOT_LOG, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 4000))
+            tail = f.read().decode(errors="replace")
+        log_txt = f"--- bot.log ({size} bytes, tail) ---\n{tail}"
+    except OSError:
+        log_txt = "(sin bot.log: el supervisor no escribio nada)"
+    return log_txt + "\n--- procesos /proc ---\n" + "\n".join(procs[-40:]) + "\n", 200, respheaders
+
+
 # ---------------------------------------------------------------- health
 @app.get("/health")
 def health():
