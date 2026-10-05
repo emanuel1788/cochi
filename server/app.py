@@ -21,6 +21,8 @@
 # Local:       python app.py  ->  http://127.0.0.1:5000
 # ============================================================================
 import base64
+import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -195,6 +197,75 @@ def trial():
     payload = {"k": key, "t": "trial", "h": hwid, "d": TRIAL_DIAS, "e": techo,
                "n": "trial-web", "i": int(time.time())}
     return jsonify(lic=sign_lic(payload), key=key, vence_techo=techo)
+
+
+# ---------------------------------------------------------------- SellAuth
+# Webhook de pagos/disputas (dashboard SellAuth -> Webhooks).
+#   SELLAUTH_WEBHOOK_SECRET  : mismo secret que se carga en el dashboard.
+#   La ENTREGA de keys es por STOCK de SellAuth (generadas con el comando
+#   !stock del bot) -> este webhook NO crea licencias en el cobro; su trabajo
+#   es la REVOCACION: ante refund/disputa/chargeback, busca en el payload
+#   cualquier key COCHI-... entregada y la marca revocada=1. El heartbeat del
+#   cheat (/check cada 5 min) borra el .lic local con motivo='revocada'.
+SELLAUTH_WEBHOOK_SECRET = os.environ.get("SELLAUTH_WEBHOOK_SECRET", "").strip()
+
+
+def _extraer_keys_sellauth(data) -> list:
+    """Busca recursivamente en el payload cualquier string COCHI-XXXX-XXXX
+    (SellAuth manda los serials entregados en formas que varian segun el
+    tipo de producto: items, serials, delivered, custom fields...)."""
+    encontradas = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x)
+        elif isinstance(o, str) and o.startswith("COCHI-"):
+            encontradas.append(o.strip())
+
+    walk(data)
+    return encontradas
+
+
+@app.post("/sellauth/webhook")
+def sellauth_webhook():
+    raw = request.get_data() or b""
+    if not SELLAUTH_WEBHOOK_SECRET:
+        return jsonify(error="sellauth webhook sin configurar (env SELLAUTH_WEBHOOK_SECRET)"), 503
+    # SellAuth firma con HMAC-SHA256 del body crudo y manda el hex en X-Signature
+    # (docs: developers/http-notifications y developers/dynamic-delivery).
+    sig = (request.headers.get("X-Signature") or "").strip().lower()
+    esperada = hmac.new(SELLAUTH_WEBHOOK_SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    if not sig or not hmac.compare_digest(sig, esperada):
+        return jsonify(error="firma invalida"), 401
+    data = request.get_json(silent=True) or {}
+    evento = (data.get("event") or data.get("type") or data.get("status") or "").lower()
+
+    # 1) eventos de cobro reales de SellAuth: NOTIFICATION.SHOP_INVOICE_*
+    #    (CREATED / PROCESSED / CONFIRMING / OUT_OF_STOCK). La entrega la hace
+    #    SellAuth con el stock de serials; aca solo queda en el log.
+    #    OJO: no existe evento de refund/dispute en las notificaciones -> la
+    #    revocacion por reembolso es revision manual del dashboard (por ahora).
+    #    El branch queda por si SellAuth agrega el evento: revoca las COCHI-*
+    #    que vengan en el payload.
+    if any(p in evento for p in ("refund", "dispute", "chargeback")):
+        keys = _extraer_keys_sellauth(data)
+        revocadas = []
+        for k in keys:
+            q("UPDATE licencias SET revocada=1 WHERE key=?", (k,), commit=True)
+            revocadas.append(k)
+        return jsonify(ok=True, evento=evento, revocadas=revocadas)
+
+    # 2) cobro: la entrega la hace SellAuth con el stock; solo queda en el log
+    if evento.startswith("notification.shop_invoice"):
+        app.logger.info("sellauth cobro: %s", json.dumps(data)[:500])
+        return jsonify(ok=True, evento=evento,
+                       nota="entrega por stock de SellAuth; nada que hacer")
+
+    return jsonify(ok=True, nota=f"evento ignorado: {evento or 'desconocido'}")
 
 
 # ---------------------------------------------------------------- admin
