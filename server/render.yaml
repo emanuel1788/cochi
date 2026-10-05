@@ -5,7 +5,8 @@ services:
     plan: free
     rootDir: server
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    # bot como proceso aparte (supervisor: lo reinicia si crashea) + gunicorn HTTP
+    startCommand: while true; do python -u bot.py; sleep 5; done & exec gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: COCHI_ADMIN_TOKEN
         sync: false      # lo pones tu en el dashboard de Render (NO en el repo)
