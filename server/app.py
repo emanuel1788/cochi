@@ -101,8 +101,11 @@ def health():
         q("SELECT 1 AS ok", (), one=True)
         import platform
         bot_vivo = any(t.name == "discord-bot" and t.is_alive() for t in threading.enumerate())
-        return jsonify(ok=True, db=ENGINE, python=platform.python_version(),
-                       bot_thread=bot_vivo)
+        resp = jsonify(ok=True, db=ENGINE, python=platform.python_version(),
+                       bot_env=bool(os.environ.get("DISCORD_TOKEN")),
+                       bot_thread=bot_vivo, bot_error=BOT_ERROR)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 500
 
@@ -393,11 +396,19 @@ def _civil_from_days(z):
 
 
 # ---- Bot de Discord en thread de fondo (Render: setear DISCORD_TOKEN) ----
+BOT_ERROR = None
 if os.environ.get("DISCORD_TOKEN"):
     import threading
     import bot as cochi_bot
 
-    threading.Thread(target=cochi_bot.run_bot, daemon=True, name="discord-bot").start()
+    def _bot_thread():
+        global BOT_ERROR
+        try:
+            cochi_bot.run_bot()
+        except Exception as e:
+            BOT_ERROR = f"{type(e).__name__}: {e}"
+
+    threading.Thread(target=_bot_thread, daemon=True, name="discord-bot").start()
 
 
 if __name__ == "__main__":
