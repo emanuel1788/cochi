@@ -48,9 +48,9 @@ SERVER_TOKEN_PATH = os.path.join(os.path.dirname(HERE), "licensing", "server_tok
 
 # plan -> (dias, precio_usdt, texto_corto_es, texto_corto_en)
 PLANES = {
-    "mes":     (30,   19.0, "1 mes",     "1 month"),
-    "3meses":  (90,   49.0, "3 meses",   "3 months"),
-    "6meses":  (180,  89.0, "6 meses",   "6 months"),
+    "mes":     (30,    7.0,  "1 mes",     "1 month"),
+    "3meses":  (90,   16.9,  "3 meses",   "3 months"),
+    "6meses":  (180,  32.0,  "6 meses",   "6 months"),
 }
 GRACIA_DIAS = 7  # dias de margen antes del techo absoluto
 
@@ -197,9 +197,11 @@ T_ES = {
     "precios": (
         "**PRECIOS COCHI CS** — pago en USDT (red TRC-20)\n\n"
         "- Trial ......... GRATIS - 1 dia - automatico desde el Launcher (1 por PC)\n"
-        "- 1 mes ......... 19 USDT\n"
-        "- 3 meses ....... 49 USDT (equivale a 16.33/mes)\n"
-        "- 6 meses ....... 89 USDT (equivale a 14.83/mes)\n\n"
+        "- 1 mes ......... 7 USDT\n"
+        "- 3 meses ....... 16.9 USDT (equivale a 5.63/mes — 20% OFF)\n"
+        "- 6 meses ....... 32 USDT (equivale a 5.33/mes — 24% OFF)\n\n"
+        "🔥 **PRECIOS INAUGURALES** de lanzamiento: suben cuando COCHI salga de desarrollo activo.\n"
+        "🚧 **En desarrollo activo**: tras cada parche de CS2, COCHI se actualiza en MINUTOS, no horas.\n\n"
         "**Como compro:**\n"
         "1) Reacciona con :shopping_cart: en #open-ticket\n"
         "2) En tu ticket te paso la wallet y pagas con USDT desde tu exchange o app crypto (guia completa en #pagos)\n"
@@ -208,9 +210,11 @@ T_ES = {
     "pricing": (
         "**COCHI CS PRICING** — USDT payment (TRC-20 network)\n\n"
         "- Trial .......... FREE - 1 day - automatic from the Launcher (1 per PC)\n"
-        "- 1 month ........ 19 USDT\n"
-        "- 3 months ....... 49 USDT (equals 16.33/mo)\n"
-        "- 6 months ....... 89 USDT (equals 14.83/mo)\n\n"
+        "- 1 month ........ 7 USDT\n"
+        "- 3 months ....... 16.9 USDT (equals 5.63/mo — 20% OFF)\n"
+        "- 6 months ....... 32 USDT (equals 5.33/mo — 24% OFF)\n\n"
+        "🔥 **INAUGURAL PRICING**: goes up once COCHI leaves active development.\n"
+        "🚧 **In active development**: after every CS2 patch, COCHI updates in MINUTES, not hours.\n\n"
         "**How to buy:**\n"
         "1) React with :globe_with_meridians: in #open-ticket\n"
         "2) In your ticket I'll send the wallet; pay with USDT from any exchange or crypto app (full guide in #payments)\n"
