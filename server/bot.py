@@ -502,6 +502,12 @@ def ticket_lang(channel) -> str:
 @bot.event
 async def on_ready():
     user = bot.user
+    # marker de conexion: app.py lo usa para detectar cuelgues pre-gateway
+    try:
+        with open(os.path.join(HERE, "conectado.flag"), "w") as f:
+            f.write(str(user.id))
+    except OSError:
+        pass
     try:
         await bot.change_presence(
             activity=discord.Activity(type=discord.ActivityType.watching, name="CS2"))
@@ -875,4 +881,23 @@ def run_bot():
 if __name__ == "__main__":
     print(f"[bot] proceso separado pid={os.getpid()} | owner={CFG.get('owner_id')!r} "
           f"guild={CFG.get('guild_id')!r} | arrancando gateway...", flush=True)
-    bot.run(CFG["token"])
+    # loop manual con deadline: bot.run() puede quedar colgado para siempre sin
+    # conectar ni loguear nada (se vio en Render con Cloudflare en el medio).
+    try:
+        os.remove(os.path.join(HERE, "conectado.flag"))  # solo vale la sesion ACTUAL
+    except OSError:
+        pass
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        try:
+            loop.run_until_complete(asyncio.wait_for(bot.login(CFG["token"]), timeout=90))
+        except asyncio.TimeoutError:
+            print("[bot] TIMEOUT: login/gateway no conecto en 90s", flush=True)
+            sys.exit(3)
+        loop.run_until_complete(bot.connect())
+    finally:
+        try:
+            loop.run_until_complete(bot.close())
+        except Exception:
+            pass
