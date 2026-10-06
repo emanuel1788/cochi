@@ -468,6 +468,7 @@ BOT_ARRANCADO = False
 BOT_PROC = None
 BOT_ERROR = None
 BOT_STATE = "no arrancado"
+CONNECTED_FLAG = os.path.join(HERE, "conectado.flag")
 
 
 def _lock_owner_fresh() -> bool:
@@ -492,6 +493,8 @@ def _clasificar_salida() -> str:
         return "intents privilegiados OFF en el portal de Discord"
     if "LoginFailure" in txt or "Improper token" in txt:
         return "TOKEN invalido (revisar DISCORD_TOKEN en Render)"
+    if "TIMEOUT: login/gateway" in txt:
+        return "login sin respuesta en 90s (red/Cloudflare)"
     if ("You are being rate limited" in txt
             or "used Cloudflare to restrict access" in txt):
         return "Cloudflare 429/1015: IP de salida de Render baneada temporalmente"
@@ -505,17 +508,34 @@ def _bot_watchdog():
     Backoff hasta 10 min: no alimentar rate limits de Cloudflare."""
     global BOT_ERROR, BOT_STATE, BOT_PROC
     fallos = 0
+    spawned_at = 0.0
     while True:
         try:
             vivo = _bot_proceso_vivo()
             hijo_vivo = BOT_PROC is not None and BOT_PROC.poll() is None
             if hijo_vivo:
-                BOT_STATE = f"corriendo (pid {BOT_PROC.pid})"
-                fallos = 0
-                try:
-                    os.utime(BOT_LOCKFILE)
-                except OSError:
-                    pass
+                gracia = time.time() - spawned_at < 150  # login+gateway hasta ~90s
+                if gracia:
+                    BOT_STATE = f"corriendo (pid {BOT_PROC.pid}; conectando)"
+                elif os.path.isfile(CONNECTED_FLAG):
+                    BOT_STATE = f"corriendo (pid {BOT_PROC.pid})"
+                    fallos = 0
+                    try:
+                        os.utime(BOT_LOCKFILE)
+                    except OSError:
+                        pass
+                else:
+                    # vivo pero sin conectar: cuelgue pre-gateway -> matar y relanzar
+                    BOT_STATE = f"proceso vivo sin conectar (pid {BOT_PROC.pid}); reintentando"
+                    try:
+                        BOT_PROC.kill()
+                        BOT_PROC.wait(timeout=10)
+                    except Exception:
+                        pass
+                    BOT_ERROR = "proceso bot vivo sin conectar (cuelgue pre-gateway); matado"
+                    fallos += 1
+                time.sleep(10 if gracia else 30)
+                continue
             elif vivo is True:
                 BOT_STATE = "corriendo (proceso bot externo)"
                 fallos = 0
@@ -547,6 +567,7 @@ def _bot_watchdog():
                 logf.close()
                 with open(BOT_LOCKFILE, "w") as f:
                     f.write(str(BOT_PROC.pid))
+                spawned_at = time.time()
                 BOT_STATE = f"proceso bot lanzado (pid {BOT_PROC.pid})"
                 print(f"[watchdog] bot.py lanzado pid={BOT_PROC.pid} (fallos previos={fallos})",
                       flush=True)
