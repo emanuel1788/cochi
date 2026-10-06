@@ -505,10 +505,14 @@ def _clasificar_salida() -> str:
 
 def _bot_watchdog():
     """Mantiene vivo `python -u bot.py` como proceso hijo, con backoff.
-    Backoff hasta 10 min: no alimentar rate limits de Cloudflare."""
+    Backoff normal hasta 10 min. Si la causa fue un ban de Cloudflare sobre la
+    IP de salida, el reintento pasa a 15->30->60 min: reintentar cada 10 min
+    contra un ban activo puede mantenerlo caliente (cada intento es trafico
+    banneado desde una IP marcada)."""
     global BOT_ERROR, BOT_STATE, BOT_PROC
     fallos = 0
     spawned_at = 0.0
+    ban_cf = 0   # intentos consecutivos rechazados por Cloudflare
     while True:
         try:
             vivo = _bot_proceso_vivo()
@@ -537,6 +541,7 @@ def _bot_watchdog():
                 time.sleep(10 if gracia else 30)
                 continue
             elif vivo is True:
+                ban_cf = 0
                 BOT_STATE = "corriendo (proceso bot externo)"
                 fallos = 0
                 try:
@@ -548,10 +553,20 @@ def _bot_watchdog():
                     razon = _clasificar_salida()
                     BOT_ERROR = f"bot.py salio con codigo {BOT_PROC.returncode}: {razon}"
                     BOT_STATE = f"proceso bot muerto ({razon}); relanzando"
+                    if "Cloudflare" in razon:
+                        ban_cf += 1
+                    else:
+                        ban_cf = 0
                     fallos += 1
                 elif BOT_PROC is None:
                     BOT_STATE = "primer arranque del proceso bot"
-                time.sleep(min(600, 30 * (2 ** min(fallos, 4))))
+                if ban_cf:
+                    # reintento espaciado anti-ban: 15 -> 30 -> 60 -> 60...
+                    espera_cf = min(3600, 900 * (2 ** min(ban_cf - 1, 2)))
+                    BOT_STATE += f" [backoff anti-ban: reintento en {espera_cf // 60} min (intento CF #{ban_cf})]"
+                    time.sleep(espera_cf)
+                else:
+                    time.sleep(min(600, 30 * (2 ** min(fallos, 4))))
                 if _lock_owner_fresh() and BOT_PROC is None:
                     BOT_STATE = "otro worker ya maneja el proceso bot"
                     continue
